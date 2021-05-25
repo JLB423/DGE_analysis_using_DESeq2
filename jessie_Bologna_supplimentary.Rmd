@@ -1,0 +1,256 @@
+---
+title: "Final Project:  Differential Gene Expression Analysis with Breast Cancer RNA-seq Data"
+author: "Jessie Bologna"
+date: "5/5/2021"
+output: 
+  html_document: 
+    theme: cerulean
+---
+
+***
+## All Code/Scripts run provided below - 
+
+***
+
+#### Step 1: QC of fastq sample files 
+
+##### First use fastp to trim the fastq adapters:  
+
+```{bash eval=FALSE, include=TRUE}
+#!/bin/bash
+
+#SBATCH --nodes=1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --time=4:00:00
+#SBATCH --mem=4GB
+#SBATCH --job-name=final_a
+#SBATCH --mail-type=FAIL
+#SBATCH --mail-user=jb7303@nyu.edu
+#SBATCH --array=1-6
+
+module purge
+
+module load fastp/intel/0.20.1
+
+echo The array index is: ${SLURM_ARRAY_TASK_ID}
+
+table=/scratch/work/courses/BI7653/project.2021/project_fastqs.txt
+line="$(head -n ${SLURM_ARRAY_TASK_ID} "${table}" | tail -n 1)"
+sample="$(printf "%s" "${line}" | cut -f1)"
+fq1="$(printf "%s" "${line}" | cut -f2)"
+
+fqdir=/scratch/work/courses/BI7653/project.2021/fastqs
+
+fastp -i $fqdir/$fq1 --trim_poly_g -o $sample.out.fq
+
+module purge
+```
+
+
+##### Next, run fastqc and Multiqc to evaluate our reads to confirm downstream analysis accuracy (html files attached for reference):
+
+```{bash eval=FALSE, include=TRUE}
+#!/bin/bash
+
+#SBATCH --nodes=1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --time=4:00:00
+#SBATCH --mem=4GB
+#SBATCH --job-name=final_a
+#SBATCH --mail-type=FAIL
+#SBATCH --mail-user=jb7303@nyu.edu
+#SBATCH --array=1-6
+
+module purge
+
+module load fastqc/0.11.9
+
+# Path to 3-column (tab-delimited) table with sample name, fastq 1 file names
+table=/scratch/work/courses/BI7653/project.2021/project_fastqs.txt
+
+# Define sample, fq1 variables for current array index
+
+line="$(head -n $SLURM_ARRAY_TASK_ID $table | tail -n 1)"
+sample="$(printf "%s" "${line}" | cut -f1)"
+fq1="$(printf "%s" "${line}" | cut -f2)"
+
+fqdir =/scratch/jb7303/final_project
+
+# Run fastqc
+fastqc $sample.out.fq
+
+echo _ESTATUS_ [ fastqc for $sample ]: $?
+echo _END_ [ fastp for $sample ]: $(date)
+
+module purge
+```
+
+***
+
+#### Step 2: Reference file: Download, Normalize, and Index the human reference file - 
+
+##### First download the file:
+
+```{bash eval=FALSE, include=TRUE}
+wget 'http://ftp.ensembl.org/pub/release-104/fasta/homo_sapiens/cdna/Homo_sapiens.GRCh38.cdna.all.fa.gz'
+```
+
+##### Next, Gunzip and Normalize using Picard Tools: 
+
+```{bash eval=FALSE, include=TRUE}
+java -jar "${PICARD_JAR}" NormalizeFasta -I Homo_sapiens.GRCh38.cdna.all.fa -O GRCH38.cdna.all_normalized.fasta
+```
+
+##### Create and index file to be used to run Salmon in the following steps:
+
+```{bash eval=FALSE, include=TRUE}
+salmon index -t GRCH38.cdna.all_normalized.fasta -i GRCH38.cdna.all_normalized.fasta_index -k 31
+```
+
+note: I tried reindexing using a different method because treated3 samples had an error in the next step, the second method of indexing still resulted in the same error. It was discovered that the file was inproperly downloaded and thus needed to be re-downloaded and rerun through QC steps. 
+***
+
+#### Step 3: Run Salmon: A psuedo alignment tool to quantify transcripts- 
+```{bash eval=FALSE, include=TRUE}
+#!/bin/bash
+#
+#SBATCH --nodes=1
+#SBATCH --tasks-per-node=1
+#SBATCH --cpus-per-task=4
+#SBATCH --time=24:00:00
+#SBATCH --mem=8GB
+#SBATCH --job-name=final_d
+#SBATCH --mail-type=FAIL
+#SBATCH --mail-user=jb7303@nyu.edu
+#SBATCH --array=1-6
+
+module purge
+
+module load salmon/1.4.0
+
+echo The array index is: ${SLURM_ARRAY_TASK_ID}
+
+table=/scratch/work/courses/BI7653/project.2021/project_fastqs.txt
+line="$(head -n ${SLURM_ARRAY_TASK_ID} "${table}" | tail -n 1)"
+sample="$(printf "%s" "${line}" | cut -f1)"
+fq1="$(printf "%s" "${line}" | cut -f2)"
+
+fqdir=/scratch/work/courses/BI7653/project.2021/fastqs
+
+salmon_index_dir=/scratch/jb7303/final_project/GRCH38.cdna.all_normalized.fasta_index
+
+mkdir "${sample}"
+cd "${sample}"
+
+salmon quant -i ${salmon_index_dir} -l A -r $fqdir/$fq1 --validateMappings --gcBias --threads ${SLURM_CPUS_PER_TASK} -o $sample.transcripts_quant
+
+echo _ESTATUS_ [ salmon quant $sample ]: $?
+echo _END_ [ salmon.slurm ]: $(date)
+
+module purge
+```
+
+
+***
+
+#### Step 4: Convert Salmon TPM's to gene-level counts & conduct DESeq2 -
+
+```{r eval=TRUE, message=FALSE, warning=FALSE, include=TRUE}
+library(tximport)
+library(DESeq2)
+sample_names <- c('control1','control2','control3','treated1','treated2','treated3')
+sample_condition <- c( rep('Control',3), rep('NRDE2_treated',3))
+
+files <- file.path("~/Jessie School/NYU/NGS/Final_project/supplimentary_docs",sample_names,paste(sample_names,".transcripts_quant",sep=""),'quant.sf')
+
+names(files) <- sample_names
+tx2gene <- read.table("tx2gene.csv",header=F,sep=",")
+txi <- tximport(files, type="salmon", tx2gene=tx2gene)
+samples <- data.frame(sample_names=sample_names,condition=sample_condition)
+row.names(samples) <- sample_names
+
+head(txi$counts)
+
+# create DESeq2 object 
+library("DESeq2")
+ddsTxi <- DESeqDataSetFromTximport(txi,
+                                   colData = samples,
+                                   design = ~ condition)
+
+```
+
+```{r eval=TRUE, message=FALSE, warning=FALSE, include=TRUE}
+# keep only genes with 10 or more reads
+keep <- rowSums(counts(ddsTxi)) >= 10
+ddsTxi <- ddsTxi[keep,]
+
+# run DESeq on the filtered data
+ddsTxi <- DESeq(ddsTxi)
+
+
+# get the shrunken values - and order by p-values - using contrast will additionally set to 0 the estimated LFC in comparison to the two groups, where all of the counts in the two groups are equal to (while other groups have positive counts)
+
+resultsNames(ddsTxi)
+
+res <- results(ddsTxi, contrast = c('condition','Control','NRDE2_treated'))
+res_ordered<- res[order(res$padj),]
+head(res_ordered, 20)
+
+# get the shrunken values
+res_shrunk <- lfcShrink(ddsTxi, contrast = c('condition','Control','NRDE2_treated'), type= 'normal' )
+res_shrunkOrdered <- res_shrunk[order(res_shrunk$pvalue),]
+head(res_shrunkOrdered,10)
+
+summary(res)
+mcols(res)$description
+
+# how many genes have a pvalue less than 0.05
+sum(res$padj < 0.05, na.rm=TRUE)
+# 3043
+
+res_05 <- results(ddsTxi, alpha = 0.05)
+summary(res_05)
+
+# save results as .csv file 
+write.csv(res_shrunkOrdered, 'dds_shrunken_results_ordered.csv')
+
+# cluster the results
+rld <- rlog(ddsTxi)
+dists <- dist(t(assay(rld)))
+plot(hclust(dists))
+
+# MA - Plot - shows the log2 fold changes attributable to a given variable over the mean of normalized counts for all the samples
+# note that points colored red = padj values lower than 0.1
+# points that fall out of the window are plotted as open triangles
+# note that it is more useful to show teh shrunken log2 fold changes - which remove the noise associated with log2 fold chnaged from low count genes without requiing arbitary filtering thresholds
+plotMA(res_shrunk, ylim =c(-2,2))
+
+dds1<- estimateDispersions(ddsTxi, fitType = 'parametric')
+plotDispEsts(dds1)
+
+dds2<- estimateDispersions(ddsTxi, fitType = 'local')
+plotDispEsts(dds2)
+
+dds3<- estimateDispersions(ddsTxi, fitType = 'mean')
+plotDispEsts(dds3)
+
+# lets see a plot of counts for the different conditions
+plotCounts(ddsTxi, gene=which.min(res$padj), intgroup="condition")
+
+# plot PCA of the two groups
+plotPCA(rld, intgroup = 'condition') 
+
+par(mar=c(8,5,2,2))
+boxplot(log10(assays(ddsTxi)[["cooks"]]), range=0, las=2)
+
+# histogram of raw p-value 
+library(ggplot2)
+ggplot(as.data.frame(res_shrunk),aes(pvalue)) + geom_histogram(fill="light blue",color='black')
+
+
+vsd <- vst(ddsTxi, blind=FALSE)
+```
+
+```
