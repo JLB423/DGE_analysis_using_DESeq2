@@ -5,5 +5,6 @@ The following report uses an RNA-seq dataset obtained from a study by Jiao, et a
 
 I conduct the analysis by first running Salmon to get the transcript counts from RNA-seq data, then to detect differentially expressed genes I run an analysis on the counts using DESeq2 to compare the transcript expression between the two classes of samples, and to also characterize deferentially expressed genes that couple be potentially be impacted by knocking down NRDE2.
 
+All file needed are located in supplementary zip
 
-
+Reference:  Alan L. Jiao, Roberto Perales, Neil T. Umbreit, Jeffrey R. Haswell, Mary E. Piper, Brian D. Adams, David Pellman, Scott Kennedy, and Frank J. Slack (March 2019) Human nuclear RNAi-defective 2 (NRDE2) is an essential RNA splicing factor.RNA March 2019 25:352-363; Published in Advance December 11, 2018, doi:10.1261/rna.069773.118 
